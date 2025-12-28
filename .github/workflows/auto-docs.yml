@@ -5,88 +5,174 @@ on:
     branches:
       - main
     paths:
-      - '**/app.py'  # Trigger when any app.py is modified
+      - '**/app.py'  # Triggers when any app.py changes
 
-  workflow_dispatch:  # Allow manual triggering
+  workflow_dispatch:  # Manual trigger option
 
 jobs:
   generate-docs:
     runs-on: ubuntu-latest
     
     permissions:
-      contents: write  # Allow pushing changes back to repo
+      contents: write
     
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # Full history for git analysis
       
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       
-      - name: Install dependencies
-        run: |
-          pip install openai
-          # Or: pip install anthropic
+      - name: Install OpenAI
+        run: pip install openai
       
-      - name: Find directories with app.py
-        id: find_dirs
+      - name: Find all app.py files
+        id: find_apps
         run: |
-          # Find all directories containing app.py
-          DIRS=$(find . -name "app.py" -type f -exec dirname {} \; | sort -u)
+          # Find all app.py files and their directories
+          find . -name "app.py" -type f ! -path "*/.*" | while read filepath; do
+            dirname "$filepath"
+          done | sort -u > /tmp/app_dirs.txt
+          
           echo "Found directories with app.py:"
-          echo "$DIRS"
-          echo "dirs<<EOF" >> $GITHUB_OUTPUT
-          echo "$DIRS" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-      
-      - name: Download documentation generator
-        run: |
-          # Download your doc generator script
-          # Replace this URL with your actual script location
-          curl -o doc_generator.py https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/scripts/openai_doc_generator.py
-          chmod +x doc_generator.py
+          cat /tmp/app_dirs.txt
       
       - name: Generate documentation
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          # Or: ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          # Loop through each directory and generate docs
+          # Create simple doc generator inline
+          cat > /tmp/gen_docs.py << 'EOF'
+          import os
+          import sys
+          from pathlib import Path
+          from datetime import datetime
+          from openai import OpenAI
+          
+          def generate_docs(project_dir):
+              project_path = Path(project_dir)
+              app_file = project_path / "app.py"
+              
+              if not app_file.exists():
+                  print(f"No app.py found in {project_dir}")
+                  return
+              
+              print(f"\n📚 Generating docs for: {project_dir}")
+              
+              # Read app.py
+              with open(app_file, 'r', encoding='utf-8', errors='ignore') as f:
+                  code = f.read()[:4000]  # First 4000 chars
+              
+              # Get file stats
+              py_files = list(project_path.glob('**/*.py'))
+              total_lines = sum(len(open(f, 'r', errors='ignore').readlines()) 
+                              for f in py_files if f.is_file())
+              
+              # Call OpenAI
+              client = OpenAI(api_key=os.environ.get('OPENAI_API_KEY'))
+              
+              prompt = f"""Analyze this Python application and create concise documentation:
+
+          Code from app.py:
+          ```python
+          {code}
+          ```
+
+          Create a markdown document with:
+          1. Brief description (2-3 sentences) of what this application does
+          2. Key features (3-5 bullet points)
+          3. Quick setup instructions
+          4. Basic usage example
+
+          Be concise and practical."""
+
+              try:
+                  response = client.chat.completions.create(
+                      model="gpt-4o-mini",
+                      messages=[
+                          {"role": "system", "content": "You are a technical documentation expert. Be concise."},
+                          {"role": "user", "content": prompt}
+                      ],
+                      max_tokens=1000
+                  )
+                  
+                  ai_content = response.choices[0].message.content
+              except Exception as e:
+                  print(f"⚠️  OpenAI API error: {e}")
+                  ai_content = "Documentation generation failed. Please check API key and quota."
+              
+              # Create markdown document
+              doc = f"""# {project_path.name} Documentation
+
+          *Auto-generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*
+
+          ---
+
+          {ai_content}
+
+          ---
+
+          ## 📊 Project Statistics
+
+          - **Python Files:** {len(py_files)}
+          - **Total Lines of Code:** {total_lines:,}
+          - **Last Updated:** {datetime.now().strftime('%Y-%m-%d')}
+
+          ---
+
+          *🤖 This documentation was automatically generated by GitHub Actions*
+          """
+              
+              # Save to docs folder
+              docs_dir = project_path / "docs"
+              docs_dir.mkdir(exist_ok=True)
+              
+              doc_file = docs_dir / "README.md"
+              with open(doc_file, 'w', encoding='utf-8') as f:
+                  f.write(doc)
+              
+              print(f"✅ Created: {doc_file}")
+          
+          # Main execution
+          if __name__ == "__main__":
+              if len(sys.argv) < 2:
+                  print("Usage: python gen_docs.py <directory>")
+                  sys.exit(1)
+              
+              generate_docs(sys.argv[1])
+          EOF
+          
+          # Generate docs for each directory
           while IFS= read -r dir; do
-            if [ ! -z "$dir" ] && [ "$dir" != "." ]; then
-              echo "Generating documentation for: $dir"
-              python3 doc_generator.py "$dir" -o "$dir/docs"
+            if [ ! -z "$dir" ]; then
+              python3 /tmp/gen_docs.py "$dir"
             fi
-          done <<< "${{ steps.find_dirs.outputs.dirs }}"
+          done < /tmp/app_dirs.txt
       
-      - name: Commit and push documentation
+      - name: Commit documentation
         run: |
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           
-          # Add generated documentation
-          git add "**/docs/*.md" || true
+          git add "**/docs/README.md"
           
-          # Check if there are changes to commit
           if git diff --staged --quiet; then
-            echo "No documentation changes to commit"
+            echo "No changes to commit"
           else
-            git commit -m "📚 Auto-generate documentation for app.py changes"
+            git commit -m "📚 Auto-generate documentation [skip ci]"
             git push
           fi
       
-      - name: Create summary
+      - name: Summary
+        if: always()
         run: |
           echo "## 📚 Documentation Generated" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Documentation has been automatically generated for the following directories:" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          
           while IFS= read -r dir; do
-            if [ ! -z "$dir" ] && [ "$dir" != "." ]; then
-              echo "- \`$dir\`" >> $GITHUB_STEP_SUMMARY
+            if [ -f "$dir/docs/README.md" ]; then
+              echo "✅ \`$dir/docs/README.md\`" >> $GITHUB_STEP_SUMMARY
             fi
-          done <<< "${{ steps.find_dirs.outputs.dirs }}"
+          done < /tmp/app_dirs.txt
