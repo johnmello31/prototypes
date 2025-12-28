@@ -1,0 +1,92 @@
+name: Auto-Generate Documentation
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '**/app.py'  # Trigger when any app.py is modified
+
+  workflow_dispatch:  # Allow manual triggering
+
+jobs:
+  generate-docs:
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: write  # Allow pushing changes back to repo
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for git analysis
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install openai
+          # Or: pip install anthropic
+      
+      - name: Find directories with app.py
+        id: find_dirs
+        run: |
+          # Find all directories containing app.py
+          DIRS=$(find . -name "app.py" -type f -exec dirname {} \; | sort -u)
+          echo "Found directories with app.py:"
+          echo "$DIRS"
+          echo "dirs<<EOF" >> $GITHUB_OUTPUT
+          echo "$DIRS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+      
+      - name: Download documentation generator
+        run: |
+          # Download your doc generator script
+          # Replace this URL with your actual script location
+          curl -o doc_generator.py https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/scripts/openai_doc_generator.py
+          chmod +x doc_generator.py
+      
+      - name: Generate documentation
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          # Or: ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # Loop through each directory and generate docs
+          while IFS= read -r dir; do
+            if [ ! -z "$dir" ] && [ "$dir" != "." ]; then
+              echo "Generating documentation for: $dir"
+              python3 doc_generator.py "$dir" -o "$dir/docs"
+            fi
+          done <<< "${{ steps.find_dirs.outputs.dirs }}"
+      
+      - name: Commit and push documentation
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          
+          # Add generated documentation
+          git add "**/docs/*.md" || true
+          
+          # Check if there are changes to commit
+          if git diff --staged --quiet; then
+            echo "No documentation changes to commit"
+          else
+            git commit -m "📚 Auto-generate documentation for app.py changes"
+            git push
+          fi
+      
+      - name: Create summary
+        run: |
+          echo "## 📚 Documentation Generated" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Documentation has been automatically generated for the following directories:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          while IFS= read -r dir; do
+            if [ ! -z "$dir" ] && [ "$dir" != "." ]; then
+              echo "- \`$dir\`" >> $GITHUB_STEP_SUMMARY
+            fi
+          done <<< "${{ steps.find_dirs.outputs.dirs }}"
