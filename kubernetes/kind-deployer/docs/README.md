@@ -1,36 +1,57 @@
 # kind-deployer Documentation
 
-*Auto-generated: 2025-12-28 23:43:14*
+*Auto-generated: 2025-12-28 23:45:39*
 
 ---
 
-# Python Application Documentation
+# Application Documentation
 
 ## Brief Description
-This application is a Flask-based web tool that automates the deployment of a Kubernetes cluster using Kind (Kubernetes in Docker). It provides real-time logs and status updates of the deployment process through a web interface.
+This Flask application facilitates the deployment of a Kubernetes cluster using Kind (Kubernetes IN Docker). It handles configuration, runs necessary shell commands to check dependencies, and manages deployment logging.
 
 ## Key Features
-- **Deployment Automation**: Facilitates the setup of a Kubernetes cluster using configurable parameters for nodes and networking.
-- **Real-time Logging**: Captures and displays deployment logs in real-time for monitoring purposes.
-- **Status Tracking**: Provides deployment status updates throughout the installation process.
-- **Error Reporting**: Logs errors for any failed commands during deployment to aid troubleshooting.
-- **Configurable Cluster Settings**: Allows customization of cluster configurations such as node roles and network settings.
+- **Cluster Configuration:** Generate clusters with customizable parameters such as nodes and network settings.
+- **Deployment Logging:** Keep track of deployment activities and errors through real-time logging.
+- **Prerequisite Checks:** Verify the installation of Docker and Kind before deployment.
+- **Error Handling:** Capture and display errors encountered during the deployment process.
 
 ## Quick Setup Instructions
-1. **Install Dependencies**: Ensure you have Python 3.x installed. Use `pip install flask pyyaml`.
-2. **Install Kind and Docker**: Ensure that Docker and Kind are installed and properly configured on your machine.
-3. **Run the Application**:
+1. **Install Dependencies:**
+   Make sure you have Python and pip installed. Then, install Flask:
+   ```bash
+   pip install Flask pyyaml
+   ```
+
+2. **Install Docker and Kind:**
+   Ensure Docker is installed and running. Install Kind by following the [Kind installation guide](https://kind.sigs.k8s.io/docs/user/quick-start/#installation).
+
+3. **Run the Application:**
+   Start the Flask application:
    ```bash
    python app.py
    ```
-4. **Access the Interface**: Open a web browser and navigate to `http://127.0.0.1:5000`.
+
+4. **Access the Application:**
+   Open your web browser and navigate to `http://localhost:5000`.
 
 ## Basic Usage Example
-1. Define your cluster configuration in a YAML format or JSON equivalent that includes parameters such as `cluster_name`, `control_plane_nodes`, and `worker_nodes`.
-2. Submit the configuration through the web interface to initiate the deployment.
-3. Monitor the deployment logs and status updates displayed on the page. 
+To deploy a cluster, the application expects a configuration input. You may start a deployment with a sample configuration:
 
-By using this application, you can streamline Kubernetes cluster management and simplify the deployment process.
+```python
+config = {
+    "cluster_name": "my-cluster",
+    "control_plane_nodes": 1,
+    "worker_nodes": 2,
+    "enable_ingress": True,
+    "pod_subnet": "192.168.0.0/16",
+    "service_subnet": "192.168.1.0/24"
+}
+```
+Call the deployment function:
+```python
+deploy_cluster(config)
+```
+This will initiate cluster deployment while logging the progress.
 
 ---
 
