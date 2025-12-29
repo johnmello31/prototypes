@@ -1,3 +1,7 @@
+###This application has been created to bootstrap a kind-cluster for kubernetes testing/development
+###This is not intended to be used in a production environment and is used for development/research purposes only.
+
+
 from flask import Flask, render_template, request, jsonify, Response
 import subprocess
 import threading
