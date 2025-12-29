@@ -1,78 +1,99 @@
 name: Auto-Generate Documentation
 
 on:
-  push:
-    branches:
-      - main
+  pull_request:
+    branches: [ main ]
     paths:
-      - '**/app.py'  # Triggers when any app.py changes
-
-  workflow_dispatch:  # Manual trigger option
+      - "**/app.py"
+      - ".github/workflows/auto-docs.yml"
+  push:
+    branches: [ main ]
+    paths:
+      - "**/app.py"
+      - ".github/workflows/auto-docs.yml"
+  workflow_dispatch:
 
 jobs:
   generate-docs:
     runs-on: ubuntu-latest
-    
-    permissions:
-      contents: write
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      
+        with:
+          fetch-depth: 0
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-      
+          python-version: "3.11"
+
       - name: Install OpenAI
-        run: pip install openai
-      
+        run: pip install --upgrade openai
+
       - name: Find all app.py files
         id: find_apps
+        shell: bash
         run: |
-          # Find all app.py files and their directories
-          find . -name "app.py" -type f ! -path "*/.*" | while read filepath; do
-            dirname "$filepath"
-          done | sort -u > /tmp/app_dirs.txt
-          
+          set -euo pipefail
+          find . -name "app.py" -type f ! -path "*/.*" -print0 \
+            | xargs -0 -n1 dirname \
+            | sort -u > /tmp/app_dirs.txt
+
           echo "Found directories with app.py:"
-          cat /tmp/app_dirs.txt
-      
+          cat /tmp/app_dirs.txt || true
+
+          if [ ! -s /tmp/app_dirs.txt ]; then
+            echo "No app.py directories found. Exiting successfully."
+            exit 0
+          fi
+
       - name: Generate documentation
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        shell: bash
         run: |
-          # Create simple doc generator inline
+          set -euo pipefail
+
+          # If this is a PR from a fork, secrets are not available.
+          # In that case, skip generation rather than failing unexpectedly.
+          if [ "${{ github.event_name }}" = "pull_request" ] && [ -z "${OPENAI_API_KEY:-}" ]; then
+            echo "OPENAI_API_KEY not available (likely fork PR). Skipping doc generation."
+            exit 0
+          fi
+
           cat > /tmp/gen_docs.py << 'EOF'
           import os
           import sys
           from pathlib import Path
           from datetime import datetime
           from openai import OpenAI
-          
-          def generate_docs(project_dir):
+
+          def generate_docs(project_dir: str):
               project_path = Path(project_dir)
               app_file = project_path / "app.py"
-              
+
               if not app_file.exists():
                   print(f"No app.py found in {project_dir}")
                   return
-              
+
               print(f"\n📚 Generating docs for: {project_dir}")
-              
-              # Read app.py
-              with open(app_file, 'r', encoding='utf-8', errors='ignore') as f:
-                  code = f.read()[:4000]  # First 4000 chars
-              
-              # Get file stats
-              py_files = list(project_path.glob('**/*.py'))
-              total_lines = sum(len(open(f, 'r', errors='ignore').readlines()) 
-                              for f in py_files if f.is_file())
-              
-              # Call OpenAI
-              client = OpenAI(api_key=os.environ.get('OPENAI_API_KEY'))
-              
+
+              with open(app_file, "r", encoding="utf-8", errors="ignore") as f:
+                  code = f.read()[:4000]
+
+              py_files = list(project_path.glob("**/*.py"))
+              total_lines = 0
+              for f in py_files:
+                  if f.is_file():
+                      try:
+                          with open(f, "r", encoding="utf-8", errors="ignore") as fh:
+                              total_lines += sum(1 for _ in fh)
+                      except Exception:
+                          pass
+
+              client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+
               prompt = f"""Analyze this Python application and create concise documentation:
 
           Code from app.py:
@@ -86,24 +107,23 @@ jobs:
           3. Quick setup instructions
           4. Basic usage example
 
-          Be concise and practical."""
+          Be concise and practical.
+          """
 
               try:
                   response = client.chat.completions.create(
                       model="gpt-4o-mini",
                       messages=[
                           {"role": "system", "content": "You are a technical documentation expert. Be concise."},
-                          {"role": "user", "content": prompt}
+                          {"role": "user", "content": prompt},
                       ],
-                      max_tokens=1000
+                      max_tokens=1000,
                   )
-                  
                   ai_content = response.choices[0].message.content
               except Exception as e:
                   print(f"⚠️  OpenAI API error: {e}")
                   ai_content = "Documentation generation failed. Please check API key and quota."
-              
-              # Create markdown document
+
               doc = f"""# {project_path.name} Documentation
 
           *Auto-generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*
@@ -124,55 +144,80 @@ jobs:
 
           *🤖 This documentation was automatically generated by GitHub Actions*
           """
-              
-              # Save to docs folder
+
               docs_dir = project_path / "docs"
               docs_dir.mkdir(exist_ok=True)
-              
+
               doc_file = docs_dir / "README.md"
-              with open(doc_file, 'w', encoding='utf-8') as f:
+              with open(doc_file, "w", encoding="utf-8") as f:
                   f.write(doc)
-              
+
               print(f"✅ Created: {doc_file}")
-          
-          # Main execution
+
           if __name__ == "__main__":
               if len(sys.argv) < 2:
                   print("Usage: python gen_docs.py <directory>")
                   sys.exit(1)
-              
               generate_docs(sys.argv[1])
           EOF
-          
-          # Generate docs for each directory
+
           while IFS= read -r dir; do
-            if [ ! -z "$dir" ]; then
+            if [ -n "$dir" ]; then
               python3 /tmp/gen_docs.py "$dir"
             fi
           done < /tmp/app_dirs.txt
-      
-      - name: Commit documentation
+
+      # ✅ This is the PR enforcement: fail if generated docs differ from what's committed.
+      - name: PR enforcement - docs must be up to date
+        if: github.event_name == 'pull_request'
+        shell: bash
         run: |
+          set -euo pipefail
+          git add "**/docs/README.md" || true
+
+          if git diff --staged --quiet; then
+            echo "Docs are up to date ✅"
+          else
+            echo "Docs are NOT up to date ❌"
+            echo ""
+            echo "Commit the regenerated docs (docs/README.md) in this PR."
+            git diff --staged --name-only
+            exit 1
+          fi
+
+      # ✅ Only auto-commit on push to main or manual dispatch (never on PR checks)
+      - name: Commit documentation (main only)
+        if: github.event_name != 'pull_request'
+        permissions:
+          contents: write
+        shell: bash
+        run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          
-          git add "**/docs/README.md"
-          
+
+          git add "**/docs/README.md" || true
+
           if git diff --staged --quiet; then
             echo "No changes to commit"
-          else
-            git commit -m "📚 Auto-generate documentation [skip ci]"
-            git push
+            exit 0
           fi
-      
+
+          git commit -m "📚 Auto-generate documentation [skip ci]"
+          git push
+
       - name: Summary
         if: always()
+        shell: bash
         run: |
           echo "## 📚 Documentation Generated" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          
-          while IFS= read -r dir; do
-            if [ -f "$dir/docs/README.md" ]; then
-              echo "✅ \`$dir/docs/README.md\`" >> $GITHUB_STEP_SUMMARY
-            fi
-          done < /tmp/app_dirs.txt
+
+          if [ -f /tmp/app_dirs.txt ]; then
+            while IFS= read -r dir; do
+              if [ -f "$dir/docs/README.md" ]; then
+                echo "✅ \`$dir/docs/README.md\`" >> $GITHUB_STEP_SUMMARY
+              fi
+            done < /tmp/app_dirs.txt
+          fi
+
